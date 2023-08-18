@@ -1,12 +1,10 @@
 use std::sync::Arc;
+
 use tide::http::headers::LOCATION;
 use tide::prelude::*;
 use tide::StatusCode::MovedPermanently;
 use tide::{http::Mime, Response};
-use utoipa::{
-    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
-    Modify, OpenApi,
-};
+use utoipa::OpenApi;
 use utoipa_swagger_ui::Config;
 
 #[async_std::main]
@@ -71,9 +69,16 @@ async fn serve_swagger(request: tide::Request<Arc<Config<'_>>>) -> tide::Result<
 }
 
 mod lunch {
-
     use std::str::FromStr;
+    use std::str::Split;
+
+    use scraper::{Html, Selector};
+    use serde::Serialize;
+    use strum::EnumString;
+    use tide::http::Url;
     use tide::prelude::*;
+    use tide::{Error, Request, Response, StatusCode};
+    use utoipa::ToSchema;
 
     #[derive(EnumString, Debug, Clone, Copy, ToSchema)]
     pub enum Building {
@@ -103,18 +108,9 @@ mod lunch {
             Building::Kornmarken => "kornmarken",
             Building::Oestergade => "kantine-oestergade",
         };
-        let urlString = ["https://lego.isscatering.dk", path].join("/");
-        Url::parse(&urlString).expect("url parsing")
+        let url_string = ["https://lego.isscatering.dk", path].join("/");
+        Url::parse(&url_string).expect("url parsing")
     }
-
-    use log::debug;
-    use scraper::{Html, Selector};
-    use serde::Serialize;
-    use std::str::Split;
-    use strum::EnumString;
-    use tide::http::Url;
-    use tide::{Error, Request, Response, StatusCode};
-    use utoipa::ToSchema;
 
     #[utoipa::path(
     get,
@@ -151,7 +147,7 @@ mod lunch {
 
         let mattermost_response = MattermostCommandResponse {
             text: markdown,
-            response_type: MattermostResponseType::In_Channel,
+            response_type: MattermostResponseType::InChannel,
         };
 
         Ok(Response::builder(StatusCode::Ok)
@@ -216,14 +212,15 @@ mod lunch {
         salat: String,
     }
 
-    #[derive(Debug, Serialize)]
-    #[serde(rename_all = "lowercase")]
+    #[derive(Serialize)]
+    #[serde(rename_all = "snake_case")]
+    #[allow(dead_code)] // Ephemeral not used currentlyg
     enum MattermostResponseType {
-        In_Channel,
+        InChannel,
         Ephemeral,
     }
 
-    #[derive(Debug, Serialize)]
+    #[derive(Serialize)]
     struct MattermostCommandResponse {
         text: String,
         response_type: MattermostResponseType,
