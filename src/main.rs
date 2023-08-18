@@ -159,7 +159,7 @@ mod lunch {
         let varm_ret_selector =
             Selector::parse("div.menu-row:nth-child(2) > div:nth-child(2)").unwrap();
         let vegetar_selector =
-            Selector::parse("div.menu-row:nth-child(4) > div:nth-child(1)").unwrap();
+            Selector::parse("div.menu-row:nth-child(4) > div:nth-child(2)").unwrap();
         let salat_selector =
             Selector::parse("div.menu-row:nth-child(6) > div:nth-child(2)").unwrap();
 
@@ -195,14 +195,16 @@ mod lunch {
 
     fn lunch_to_markdown(lunch: Lunch) -> String {
         [
-            "# Varm ret",
+            "##### Varm ret\n  ",
             lunch.varm_ret.as_str(),
-            "# Vegetar",
+            "\n",
+            "##### Vegetar\n  ",
             lunch.vegetar.as_str(),
-            "# Salat",
+            "\n",
+            "##### Salat\n  ",
             lunch.salat.as_str(),
         ]
-        .join("\n")
+        .join("")
     }
 
     #[derive(Debug)]
