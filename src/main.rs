@@ -44,7 +44,7 @@ async fn main() {
         );
 
     info!("Listening on port 8080");
-    
+
     axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
         .serve(app.into_make_service())
         .await
@@ -110,44 +110,26 @@ mod mattermost {
 mod lunch {
     use scraper::{Html, Selector};
     use serde::Deserialize;
-    use strum::EnumString;
     use utoipa::ToSchema;
 
     use crate::Markdown;
 
-    #[derive(EnumString, Debug, Clone, Copy, ToSchema, Deserialize)]
+    #[derive(strum_macros::Display, Debug, Clone, Copy, ToSchema, Deserialize)]
+    #[strum(serialize_all = "kebab-case")]
     pub enum Building {
-        #[strum(ascii_case_insensitive)]
         Aastvej,
-        #[strum(ascii_case_insensitive)]
         Multihuset,
-        #[strum(ascii_case_insensitive)]
         Havremarken,
-        #[strum(ascii_case_insensitive)]
+        #[strum(serialize = "kloeverblomsten-kirkbi")]
         KIRKBI,
-        #[strum(ascii_case_insensitive)]
         Midtown,
-        #[strum(ascii_case_insensitive)]
         Kornmarken,
-        #[strum(ascii_case_insensitive)]
+        #[strum(serialize = "kantine-oestergade")]
         Oestergade,
     }
 
-    fn building_to_url(building: &Building) -> String {
-        let path = match building {
-            Building::Aastvej => "aastvej",
-            Building::Multihuset => "multihuset",
-            Building::Havremarken => "havremarken",
-            Building::KIRKBI => "kloeverblomsten-kirkbi",
-            Building::Midtown => "midtown",
-            Building::Kornmarken => "kornmarken",
-            Building::Oestergade => "kantine-oestergade",
-        };
-        format!("https://lego.isscatering.dk/{path}")
-    }
-
     pub(crate) async fn get_lunch(building: Building) -> anyhow::Result<Markdown> {
-        let url = building_to_url(&building);
+        let url = format!("https://lego.isscatering.dk/{}", building.to_string());
         let response = reqwest::get(url).await?.text().await?;
         let html = Html::parse_document(&response);
         let lunch = scrape_lunch(&html);
