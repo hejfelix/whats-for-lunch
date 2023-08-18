@@ -17,12 +17,15 @@ async fn main() -> tide::Result<()> {
 
     #[derive(OpenApi)]
     #[openapi(
-    paths(
-    lunch::get_lunch,
-    ),
-    tags(
-    (name = "lunch", description = "Lunch")
-    )
+        paths(
+            lunch::get_lunch,
+        ),
+        components(
+            schemas(lunch::Building)
+        ),
+        tags(
+            (name = "lunch", description = "Lunch")
+        )
     )]
     struct ApiDoc;
 
@@ -70,9 +73,10 @@ async fn serve_swagger(request: tide::Request<Arc<Config<'_>>>) -> tide::Result<
 mod lunch {
 
     use std::str::FromStr;
+    use tide::prelude::*;
 
-    #[derive(EnumString, Debug, Clone, Copy)]
-    enum Building {
+    #[derive(EnumString, Debug, Clone, Copy, ToSchema)]
+    pub enum Building {
         #[strum(ascii_case_insensitive)]
         Aastvej,
         #[strum(ascii_case_insensitive)]
@@ -105,16 +109,18 @@ mod lunch {
 
     use log::debug;
     use scraper::{Html, Selector};
+    use serde::Serialize;
     use std::str::Split;
     use strum::EnumString;
     use tide::http::Url;
     use tide::{Error, Request, Response, StatusCode};
+    use utoipa::ToSchema;
 
     #[utoipa::path(
     get,
     path = "/api/{building}/lunch",
     params(
-    ("building" = String, Path, description = "the building for which to get lunch")
+    ("building" = Building, Path, description = "the building for which to get lunch")
     ),
     responses(
     (status = 200, description = "Get lunch for specified building")
@@ -143,7 +149,14 @@ mod lunch {
 
         let markdown = lunch_to_markdown(lunch);
 
-        Ok(Response::builder(StatusCode::Ok).body(markdown).build())
+        let mattermost_response = MattermostCommandResponse {
+            text: markdown,
+            response_type: MattermostResponseType::In_Channel,
+        };
+
+        Ok(Response::builder(StatusCode::Ok)
+            .body(json!(mattermost_response))
+            .build())
     }
 
     fn scrape_lunch(html: &Html) -> Lunch {
@@ -203,4 +216,16 @@ mod lunch {
         salat: String,
     }
 
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "lowercase")]
+    enum MattermostResponseType {
+        In_Channel,
+        Ephemeral,
+    }
+
+    #[derive(Debug, Serialize)]
+    struct MattermostCommandResponse {
+        text: String,
+        response_type: MattermostResponseType,
+    }
 }
