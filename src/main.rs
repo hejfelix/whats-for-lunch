@@ -1,158 +1,141 @@
-use std::sync::Arc;
-
-use tide::http::headers::LOCATION;
-use tide::prelude::*;
-use tide::StatusCode::MovedPermanently;
-use tide::{http::Mime, Response};
+use axum::extract::Path;
+use axum::http::StatusCode;
+use axum::response::Redirect;
+use axum::routing::get;
+use axum::{Json, Router};
+use log::info;
+use lunch::Building;
+use mattermost::MattermostCommandResponse;
+use tower_http::trace::{self, TraceLayer};
+use tracing::Level;
 use utoipa::OpenApi;
-use utoipa_swagger_ui::Config;
+use utoipa_rapidoc::RapiDoc;
 
-#[async_std::main]
-async fn main() -> tide::Result<()> {
-    env_logger::init();
-    let config = Arc::new(Config::from("/api-docs/openapi.json"));
-    let mut app = tide::with_state(config);
+#[derive(OpenApi)]
+#[openapi(
+    paths(
+        get_lunch,
+    ),
+    components(
+        schemas(lunch::Building)
+    ),
+    tags(
+        (name = "lunch", description = "Lunch")
+    )
+)]
+struct ApiDoc;
 
-    #[derive(OpenApi)]
-    #[openapi(
-        paths(
-            lunch::get_lunch,
-        ),
-        components(
-            schemas(lunch::Building)
-        ),
-        tags(
-            (name = "lunch", description = "Lunch")
-        )
-    )]
-    struct ApiDoc;
+pub(crate) struct Markdown(String);
 
-    // serve OpenApi json
-    app.at("/api-docs/openapi.json")
-        .get(|_| async move { Ok(Response::builder(200).body(json!(ApiDoc::openapi()))) });
+#[tokio::main]
+async fn main() {
+    tracing_subscriber::fmt::init();
 
-    app.at("").get(|_| async {
-        Ok(Response::builder(MovedPermanently)
-            .header(LOCATION, "/swagger-ui/index.html")
-            .build())
-    });
+    let api = Router::new().route("/:building/lunch", get(get_lunch));
 
-    // serve Swagger UI
-    app.at("/swagger-ui/*").get(serve_swagger);
+    let app = Router::new()
+        .merge(RapiDoc::with_openapi("/api-docs/openapi.json", ApiDoc::openapi()).path("/rapidoc"))
+        .route("/", get(|| async { Redirect::permanent("/rapidoc") }))
+        .nest("/api", api)
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        );
 
-    app.at("/api").nest({
-        let mut todos = tide::new();
-        todos.at("*/lunch").get(lunch::get_lunch);
-        todos
-    });
+    info!("Listening on port 8080");
 
-    app.listen("0.0.0.0:8080").await?;
-    Ok(())
+    axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
+        .serve(app.into_make_service())
+        .await
+        .unwrap();
 }
 
-async fn serve_swagger(request: tide::Request<Arc<Config<'_>>>) -> tide::Result<Response> {
-    let config = request.state().clone();
-    let path = request.url().path().to_string();
-    let tail = path.strip_prefix("/swagger-ui/").unwrap();
+#[utoipa::path(
+    get,
+    path = "/api/{building}/lunch",
+    params(
+        ("building" = Building, Path, description = "the building for which to get lunch")
+    ),
+    responses(
+        (status = 200, description = "Get lunch for specified building")
+    )
+)]
+async fn get_lunch(
+    Path(building): Path<Building>,
+) -> Result<Json<MattermostCommandResponse>, StatusCode> {
+    match lunch::get_lunch(building).await {
+        Ok(markdown_lunch) => Ok(Json(MattermostCommandResponse::in_channel(markdown_lunch))),
+        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+    }
+}
 
-    match utoipa_swagger_ui::serve(tail, config) {
-        Ok(swagger_file) => swagger_file
-            .map(|file| {
-                Ok(Response::builder(200)
-                    .body(file.bytes.to_vec())
-                    .content_type(file.content_type.parse::<Mime>()?)
-                    .build())
-            })
-            .unwrap_or_else(|| Ok(Response::builder(404).build())),
-        Err(error) => Ok(Response::builder(500).body(error.to_string()).build()),
+mod mattermost {
+    use serde::Serialize;
+
+    use crate::Markdown;
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "snake_case")]
+    #[allow(dead_code)] // Ephemeral not used currently
+    enum MattermostResponseType {
+        InChannel,
+        Ephemeral,
+    }
+
+    #[derive(Serialize)]
+    pub(crate) struct MattermostCommandResponse {
+        text: String,
+        response_type: MattermostResponseType,
+    }
+
+    impl MattermostCommandResponse {
+        pub fn in_channel(markdown: Markdown) -> Self {
+            Self {
+                text: markdown.0,
+                response_type: MattermostResponseType::InChannel,
+            }
+        }
+
+        #[allow(dead_code)] // Ephemeral not used currently
+        pub fn ephemeral(markdown: Markdown) -> Self {
+            Self {
+                text: markdown.0,
+                response_type: MattermostResponseType::Ephemeral,
+            }
+        }
     }
 }
 
 mod lunch {
-    use std::str::FromStr;
-    use std::str::Split;
-
     use scraper::{Html, Selector};
-    use serde::Serialize;
-    use strum::EnumString;
-    use tide::http::Url;
-    use tide::prelude::*;
-    use tide::{Error, Request, Response, StatusCode};
+    use serde::Deserialize;
     use utoipa::ToSchema;
 
-    #[derive(EnumString, Debug, Clone, Copy, ToSchema)]
+    use crate::Markdown;
+
+    #[derive(strum_macros::Display, Debug, Clone, Copy, ToSchema, Deserialize)]
+    #[strum(serialize_all = "kebab-case")]
     pub enum Building {
-        #[strum(ascii_case_insensitive)]
         Aastvej,
-        #[strum(ascii_case_insensitive)]
         Multihuset,
-        #[strum(ascii_case_insensitive)]
         Havremarken,
-        #[strum(ascii_case_insensitive)]
+        #[strum(serialize = "kloeverblomsten-kirkbi")]
         KIRKBI,
-        #[strum(ascii_case_insensitive)]
         Midtown,
-        #[strum(ascii_case_insensitive)]
         Kornmarken,
-        #[strum(ascii_case_insensitive)]
+        #[strum(serialize = "kantine-oestergade")]
         Oestergade,
     }
 
-    fn building_to_url(building: Building) -> Url {
-        let path = match building {
-            Building::Aastvej => "aastvej",
-            Building::Multihuset => "multihuset",
-            Building::Havremarken => "havremarken",
-            Building::KIRKBI => "kloeverblomsten-kirkbi",
-            Building::Midtown => "midtown",
-            Building::Kornmarken => "kornmarken",
-            Building::Oestergade => "kantine-oestergade",
-        };
-        let url_string = ["https://lego.isscatering.dk", path].join("/");
-        Url::parse(&url_string).expect("url parsing")
-    }
-
-    #[utoipa::path(
-    get,
-    path = "/api/{building}/lunch",
-    params(
-    ("building" = Building, Path, description = "the building for which to get lunch")
-    ),
-    responses(
-    (status = 200, description = "Get lunch for specified building")
-    )
-    )]
-    pub(super) async fn get_lunch(req: Request<()>) -> tide::Result<Response> {
-        let mut path: Split<char> = req
-            .url()
-            .path_segments()
-            .ok_or_else(|| Error::from_str(StatusCode::BadRequest, "path needed"))?;
-        let building = path
-            .next()
-            .ok_or_else(|| Error::from_str(StatusCode::BadRequest, "path param missing"))?;
-
-        let building_enum = Building::from_str(building)
-            .ok()
-            .ok_or_else(|| Error::from_str(StatusCode::BadRequest, "bad path param"))?;
-
-        let building_url = building_to_url(building_enum);
-
-        let response_body = surf::get(building_url).recv_string().await?;
-
-        let html = Html::parse_document(&response_body);
-
+    pub(crate) async fn get_lunch(building: Building) -> anyhow::Result<Markdown> {
+        let url = format!("https://lego.isscatering.dk/{}", building.to_string());
+        let response = reqwest::get(url).await?.text().await?;
+        let html = Html::parse_document(&response);
         let lunch = scrape_lunch(&html);
+        let markdown = lunch_to_markdown(&lunch);
 
-        let markdown = lunch_to_markdown(lunch);
-
-        let mattermost_response = MattermostCommandResponse {
-            text: markdown,
-            response_type: MattermostResponseType::InChannel,
-        };
-
-        Ok(Response::builder(StatusCode::Ok)
-            .body(json!(mattermost_response))
-            .build())
+        Ok(markdown)
     }
 
     fn scrape_lunch(html: &Html) -> Lunch {
@@ -178,6 +161,7 @@ mod lunch {
             .text()
             .next()
             .unwrap();
+
         let salat = html
             .select(&salat_selector)
             .next()
@@ -193,18 +177,20 @@ mod lunch {
         }
     }
 
-    fn lunch_to_markdown(lunch: Lunch) -> String {
-        [
-            "##### Varm ret\n  ",
-            lunch.varm_ret.as_str(),
-            "\n",
-            "##### Vegetar\n  ",
-            lunch.vegetar.as_str(),
-            "\n",
-            "##### Salat\n  ",
-            lunch.salat.as_str(),
-        ]
-        .join("")
+    fn lunch_to_markdown(lunch: &Lunch) -> Markdown {
+        Markdown(
+            [
+                "##### Varm ret\n  ",
+                lunch.varm_ret.as_str(),
+                "\n",
+                "##### Vegetar\n  ",
+                lunch.vegetar.as_str(),
+                "\n",
+                "##### Salat\n  ",
+                lunch.salat.as_str(),
+            ]
+            .join(""),
+        )
     }
 
     #[derive(Debug)]
@@ -212,19 +198,5 @@ mod lunch {
         varm_ret: String,
         vegetar: String,
         salat: String,
-    }
-
-    #[derive(Serialize)]
-    #[serde(rename_all = "snake_case")]
-    #[allow(dead_code)] // Ephemeral not used currentlyg
-    enum MattermostResponseType {
-        InChannel,
-        Ephemeral,
-    }
-
-    #[derive(Serialize)]
-    struct MattermostCommandResponse {
-        text: String,
-        response_type: MattermostResponseType,
     }
 }
