@@ -48,7 +48,7 @@ async fn main() {
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         );
 
-    info!("Listening on port http://127.0.0.1:8080");
+    info!("Listening on http://127.0.0.1:8080");
 
     axum::Server::bind(&"0.0.0.0:8080".parse().unwrap())
         .serve(app.into_make_service())
